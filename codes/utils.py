@@ -106,8 +106,8 @@ def load_paths(path, num_ent, max_l, tpn, use_ratio=False):
     biased = False    
     num_paths = num_ent * tpn
 
-    paths_idx = np.zeros((num_paths, max_l),dtype=np.int)
-    mask_idx = np.zeros((num_paths, max_l),dtype=np.int)
+    paths_idx = np.zeros((num_paths, max_l),dtype=int)
+    mask_idx = np.zeros((num_paths, max_l),dtype=int)
 
     ends = np.zeros((num_paths,2), dtype=int)
 
@@ -321,16 +321,18 @@ def prepare_saved_path(args):
     # dataset folder
     save_path = os.path.join(args.save_path, args.dataset)
     
+    # 使用 os.makedirs 确保父目录存在
     if not os.path.exists(save_path):
-        os.mkdir(save_path)
+        os.makedirs(save_path)
     
     # model folder index
     now = datetime.datetime.now()
 
-    save_folder =  '_'.join([str(now.day), str(now.month), str(now.strftime("%H:%M:%S"))])
+    # 使用下划线替换冒号
+    save_folder =  '_'.join([str(now.day), str(now.month), str(now.strftime("%H_%M_%S"))])
     save_path = os.path.join(save_path, save_folder)
     
-    os.mkdir(save_path)
+    os.makedirs(save_path)
     with open(os.path.join(save_path, 'config.txt'), 'w') as f:
         for k,v in vars(args).items():
             f.write(str(k) + ': ' + str(v) + '\n')
