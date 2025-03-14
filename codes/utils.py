@@ -64,6 +64,7 @@ def parse_args():
     parser.add_argument('--no_film', action='store_true', help='use op film')
     parser.add_argument('--op_rnn', type=bool, default=True, help='RNN aggre')
     parser.add_argument('--op_mean', action='store_true', help='mean aggre')
+    parser.add_argument('--model_variant', type=str, default='advanced', help='model variant: base or advanced')
 
 
     return parser.parse_args() 

@@ -13,7 +13,7 @@ from torch.optim import optimizer
 from dataloader import create_batches, prepare_batch, prepare_batch_gcn
 
 import time
-from model import BaseModel
+from model import BaseModel, AdvancedModel
 from data_process import get_dataset
 
 from sklearn.metrics import roc_auc_score, accuracy_score
@@ -238,8 +238,12 @@ def run(args, seed, data, path):
 
     model_path = os.path.join(path, str(seed))
 
-
-    model = BaseModel(data, args)
+    # 根据model_variant参数选择模型
+    if args.model_variant == 'advanced':
+        model = AdvancedModel(data, args)
+    else:
+        model = BaseModel(data, args)
+        
     optimizer = torch.optim.Adam(model.parameters(),\
                                  lr=args.lr, weight_decay=args.decay)
 
