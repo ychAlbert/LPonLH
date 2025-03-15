@@ -65,6 +65,17 @@ def parse_args():
     parser.add_argument('--op_rnn', type=bool, default=True, help='RNN aggre')
     parser.add_argument('--op_mean', action='store_true', help='mean aggre')
     parser.add_argument('--model_variant', type=str, default='advanced', help='model variant: base or advanced')
+    
+    # 消融实验参数
+    parser.add_argument('--no_gat', action='store_true', help='禁用图注意力网络')
+    parser.add_argument('--no_gate', action='store_true', help='禁用门控机制')
+    parser.add_argument('--no_path_attn', action='store_true', help='禁用路径注意力')
+    parser.add_argument('--no_global_attn', action='store_true', help='禁用全局注意力')
+    parser.add_argument('--no_layer_norm', action='store_true', help='禁用层归一化')
+    parser.add_argument('--attn_heads', type=int, default=4, help='注意力头数量')
+    parser.add_argument('--ablation_mode', type=str, default='none', 
+                        choices=['none', 'gat_only', 'gate_only', 'path_attn_only', 'global_attn_only', 'layer_norm_only'],
+                        help='消融实验模式：none-正常模式，gat_only-仅使用GAT，gate_only-仅使用门控，path_attn_only-仅使用路径注意力，global_attn_only-仅使用全局注意力，layer_norm_only-仅使用层归一化')
 
 
     return parser.parse_args() 

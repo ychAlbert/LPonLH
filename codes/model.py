@@ -78,90 +78,6 @@ class BaseLayer(nn.Module):
 
         return output, 0, 0, [t_x[idx], L_film, 0]
 
-
-class AdvancedLayer(nn.Module):
-    def __init__(self, args, in_feat, out_feat):
-        super(AdvancedLayer, self).__init__()
-
-        self.lamda = args.lamda
-        self.w = nn.Linear(in_feat, out_feat)
-        self.w_type = nn.Linear(in_feat, args.t_embed)
-
-        self.gamma = nn.Linear(args.t_embed, in_feat) 
-        self.beta = nn.Linear(args.t_embed, in_feat)
-        
-        # 自注意力机制
-        self.q_linear = nn.Linear(in_feat, in_feat)
-        self.k_linear = nn.Linear(in_feat, in_feat)
-        self.v_linear = nn.Linear(in_feat, in_feat)
-        self.attn_scale = 1.0 / math.sqrt(in_feat)
-        
-        # 图卷积增强
-        self.gcn_w = nn.Linear(in_feat, in_feat)
-        
-        # 门控更新机制
-        self.gate = nn.Linear(in_feat * 2, 1)
-        
-        self.no_film = args.no_film
-
-    def forward(self, embed, idx, paths, masks, neighs, t_tilde=None, ntype=None):
-        t_x = self.w_type(embed) # [batch, t_embed size]
-        
-        # 路径嵌入
-        t_p = torch.sum(t_x[paths] * masks.unsqueeze(dim=-1), dim=-2)
-        t_p /= torch.sum(masks, dim=2, keepdim=True) + 1e-10
-   
-        feat = embed[idx] 
-        h_l = embed[neighs[:,:,0]]
-        
-        # 自注意力机制增强邻居表示
-        if h_l.size(1) > 1:  # 确保有邻居节点
-            q = self.q_linear(feat).unsqueeze(1)  # [batch, 1, feat_dim]
-            k = self.k_linear(h_l)  # [batch, num_neighbors, feat_dim]
-            v = self.v_linear(h_l)  # [batch, num_neighbors, feat_dim]
-            
-            # 计算注意力分数
-            attn_scores = torch.bmm(q, k.transpose(1, 2)) * self.attn_scale  # [batch, 1, num_neighbors]
-            attn_weights = F.softmax(attn_scores, dim=2)  # [batch, 1, num_neighbors]
-            
-            # 加权聚合
-            attn_output = torch.bmm(attn_weights, v).squeeze(1)  # [batch, feat_dim]
-        else:
-            attn_output = torch.zeros_like(feat)
-
-        # FiLM条件调制
-        if self.no_film:
-            p_x = h_l
-        else:
-            gamma = F.leaky_relu(self.gamma(t_p))
-            beta = F.leaky_relu(self.beta(t_p))
-            p_x = (gamma + 1) * h_l + beta
-        
-        # 路径长度加权
-        l_p = torch.unsqueeze(neighs[:,:,1], 2) 
-        alpha = torch.exp(-self.lamda * l_p)
-        
-        # 图卷积聚合
-        gcn_x = self.gcn_w(p_x)
-        a_x = torch.sum(alpha * gcn_x, dim=1)
-        
-        # 门控融合自注意力和图卷积结果
-        combined = torch.cat([a_x, attn_output], dim=1)
-        gate_val = torch.sigmoid(self.gate(combined))
-        fused = gate_val * a_x + (1 - gate_val) * attn_output
-        
-        # 残差连接
-        update = feat + fused
-        output = F.leaky_relu(self.w(update))
-        
-        # 正则化项
-        L_film = torch.sum(torch.norm(gamma, dim=1)) + torch.sum(torch.norm(beta, dim=1))
-        L_film /= gamma.shape[0]
-        
-        return output, 0, 0, [t_x[idx], L_film, 0]
-
-
-
 class BaseModel(nn.Module):
     def __init__(self, data, args):
         super(BaseModel, self).__init__()
@@ -269,12 +185,111 @@ class BaseModel(nn.Module):
         loss = torch.max((pos - neg), -self.gamma).mean() + self.gamma
         return loss 
 
+class AdvancedLayer(nn.Module):
+    def __init__(self, args, in_feat, out_feat):
+        super(AdvancedLayer, self).__init__()
+
+        self.lamda = args.lamda
+        self.w = nn.Linear(in_feat, out_feat)
+        self.w_type = nn.Linear(in_feat, args.t_embed)
+
+        # FiLM参数
+        self.no_film = args.no_film
+        if not self.no_film:
+            self.gamma = nn.Linear(args.t_embed, in_feat)
+            self.beta = nn.Linear(args.t_embed, in_feat)
+
+        # 消融实验参数
+        self.no_gat = args.no_gat  # 禁用图注意力网络
+        self.no_gate = args.no_gate  # 禁用门控机制
+        self.no_path_attn = args.no_path_attn  # 禁用路径注意力
+        
+        # 消融实验模式
+        if args.ablation_mode != 'none':
+            self.no_gat = args.ablation_mode != 'gat_only'
+            self.no_gate = args.ablation_mode != 'gate_only'
+            self.no_path_attn = args.ablation_mode != 'path_attn_only'
+
+        # 图注意力网络 (GAT)
+        if not self.no_gat:
+            self.attn_heads = args.attn_heads
+            self.attn_vec = nn.Linear(in_feat, in_feat // self.attn_heads)
+            self.attn_combine = nn.Linear(in_feat, in_feat)
+
+        # 门控机制
+        if not self.no_gate:
+            self.gate = nn.Linear(in_feat * 2, 1)
+
+        # 路径注意力
+        if not self.no_path_attn:
+            self.path_attn = nn.Linear(args.t_embed, 1)
+
+    def forward(self, embed, idx, paths, masks, neighs, t_tilde=None, ntype=None):
+        t_x = self.w_type(embed)
+
+        # 路径注意力加权路径嵌入
+        if not self.no_path_attn:
+            path_attn_weights = torch.softmax(self.path_attn(t_x[paths]), dim=-2)
+            t_p = torch.sum(t_x[paths] * path_attn_weights * masks.unsqueeze(dim=-1), dim=-2)
+        else:
+            # 不使用路径注意力，直接平均
+            t_p = torch.sum(t_x[paths] * masks.unsqueeze(dim=-1), dim=-2)
+        
+        t_p /= torch.sum(masks, dim=2, keepdim=True) + 1e-10
+
+        feat = embed[idx]
+        h_l = embed[neighs[:, :, 0]]
+
+        # FiLM层
+        if self.no_film:
+            p_x = h_l
+            L_film = torch.tensor(0.0, device=feat.device)
+        else:
+            gamma = F.leaky_relu(self.gamma(t_p))
+            beta = F.leaky_relu(self.beta(t_p))
+            p_x = (gamma + 1) * h_l + beta
+            L_film = torch.sum(torch.norm(gamma, dim=1)) + torch.sum(torch.norm(beta, dim=1))
+            L_film /= gamma.shape[0]
+
+        # 图注意力网络
+        if not self.no_gat and h_l.size(1) > 1:
+            attn_q = self.attn_vec(feat).unsqueeze(1).repeat(1, h_l.size(1), 1)
+            attn_k = self.attn_vec(p_x)
+            attn_v = p_x
+
+            attn_scores = torch.sum(attn_q * attn_k, dim=-1)
+            attn_weights = F.softmax(attn_scores, dim=1).unsqueeze(2)
+
+            attn_output = torch.sum(attn_weights * attn_v, dim=1)
+            attn_output = self.attn_combine(attn_output)
+        else:
+            attn_output = torch.zeros_like(feat)
+
+        # 基于路径长度的消息传递
+        l_p = torch.unsqueeze(neighs[:, :, 1], 2)
+        alpha = torch.exp(-self.lamda * l_p)
+
+        gcn_x = p_x
+        a_x = torch.sum(alpha * gcn_x, dim=1)
+
+        # 门控机制
+        if not self.no_gate:
+            combined = torch.cat([a_x, attn_output], dim=1)
+            gate_val = torch.sigmoid(self.gate(combined))
+            fused = gate_val * a_x + (1 - gate_val) * attn_output
+        else:
+            # 不使用门控，直接相加
+            fused = a_x + attn_output
+
+        update = feat + fused
+        output = F.leaky_relu(self.w(update))
+
+        return output, 0, 0, [t_x[idx], L_film, 0]
 
 class AdvancedModel(BaseModel):
     def __init__(self, data, args):
         super(AdvancedModel, self).__init__(data, args)
-        
-        # 替换基础层为高级层
+
         if self.use_emb:
             in_feat = args.embed
         else:
@@ -282,52 +297,62 @@ class AdvancedModel(BaseModel):
                 in_feat = args.embed
             else:
                 in_feat = data.feat.shape[1]
-        
-        # 使用高级层替代基础层
+
         self.layer1 = AdvancedLayer(args, in_feat, args.hidden)
         self.layer2 = AdvancedLayer(args, args.hidden, args.hidden)
+
+        # 消融实验参数
+        self.no_global_attn = args.no_global_attn
+        self.no_layer_norm = args.no_layer_norm
         
-        # 添加额外的注意力层用于全局信息聚合
-        self.global_attention = nn.MultiheadAttention(args.hidden, 4, dropout=args.drop)
-        
-        # 添加层归一化
-        self.layer_norm1 = nn.LayerNorm(args.hidden)
-        self.layer_norm2 = nn.LayerNorm(args.hidden)
-        
+        # 消融实验模式
+        if args.ablation_mode != 'none':
+            self.no_global_attn = args.ablation_mode != 'global_attn_only'
+            self.no_layer_norm = args.ablation_mode != 'layer_norm_only'
+
+        # 全局注意力
+        if not self.no_global_attn:
+            self.global_attention = nn.MultiheadAttention(args.hidden, args.attn_heads, dropout=args.drop)
+
+        # 层归一化
+        if not self.no_layer_norm:
+            self.layer_norm1 = nn.LayerNorm(args.hidden)
+            self.layer_norm2 = nn.LayerNorm(args.hidden)
+
     def forward(self, b_data, x=None):
-        # 复用基类的嵌入处理
         if self.use_emb:
             x = self.embed
         else:
             if self.reduce:
                 x = self.fc(x)
-        
-        # 第一层处理
+
         x1, l1_t1, l1_t2, sup1 = \
-             self.layer1(x, b_data['l1'], b_data['paths_l1'],\
-                        b_data['mask_l1'] ,b_data['end_l1'])
+            self.layer1(x, b_data['l1'], b_data['paths_l1'], \
+                        b_data['mask_l1'], b_data['end_l1'])
         t1, film1, e1 = sup1
+
+        # 层归一化
+        if not self.no_layer_norm:
+            x1 = self.layer_norm1(x1)
         
-        # 归一化和dropout
-        x1 = self.layer_norm1(x1)
         x1 = F.dropout(x1, self.drop, training=self.training)
-        
-        # 第二层处理
+
         x2, l2_t1, l2_t2, sup2 = \
             self.layer2(x1, b_data['l2'], b_data['paths_l2'], \
-                        b_data['mask_l2'], b_data['end_l2']) 
-        
-        # 归一化
-        x2 = self.layer_norm2(x2)
-        t2, film2, e2 = sup2
-        
-        # 全局注意力处理 - 可选的额外步骤
-        if len(b_data['l2']) > 1:  # 只有当有足够的节点时才应用全局注意力
-            x2_reshaped = x2.unsqueeze(1)  # [batch, 1, hidden]
-            attn_output, _ = self.global_attention(x2_reshaped, x2_reshaped, x2_reshaped)
-            x2 = x2 + attn_output.squeeze(1)  # 残差连接
-            x2 = F.normalize(x2)  # 最终归一化
-        
-        return x2, t2, film1+film2
+                        b_data['mask_l2'], b_data['end_l2'])
 
-    
+        # 层归一化
+        if not self.no_layer_norm:
+            x2 = self.layer_norm2(x2)
+            
+        t2, film2, e2 = sup2
+
+        # 全局注意力
+        if not self.no_global_attn and len(b_data['l2']) > 1:
+            x2_reshaped = x2.unsqueeze(1)
+            attn_output, _ = self.global_attention(x2_reshaped, x2_reshaped, x2_reshaped)
+            x2 = x2 + attn_output.squeeze(1)
+        
+        x2 = F.normalize(x2)
+
+        return x2, t2, film1 + film2
