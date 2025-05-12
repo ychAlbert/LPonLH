@@ -1,6 +1,6 @@
 # LHGNN：潜在异构图上的链接预测
 
-我们提供了代码（基于 PyTorch）和数据集，用于我们的论文："[潜在异构图上的链接预测](https://arxiv.org/abs/2302.10432)"（简称为 LHGNN），该论文已被 TheWebConf 2023 接收。
+我们提供了代码（基于 PyTorch）和数据集，用于我们的论文："Path-Aware Graph Neural Network for Link Prediction in Latent Heterogeneous Graphs"（简称为 PAGNN），该论文已被 ICIC 2025 以oral形式接收。
 
 
 ## 1. 描述
